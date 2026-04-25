@@ -1,0 +1,211 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <title>CSSD Cleaning Assistant | XR Blocks</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no" />
+    <link type="text/css" rel="stylesheet" href="https://xrblocks.github.io/css/xr.css" />
+    <script>
+      window.litDisableBundleWarning = true;
+    </script>
+    <script type="importmap">
+      {
+        "imports": {
+          "three": "https://cdn.jsdelivr.net/npm/three@0.182.0/build/three.module.js",
+          "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.182.0/examples/jsm/",
+          "troika-three-text": "https://cdn.jsdelivr.net/gh/protectwise/troika@028b81cf308f0f22e5aa8e78196be56ec1997af5/packages/troika-three-text/src/index.js",
+          "troika-three-utils": "https://cdn.jsdelivr.net/gh/protectwise/troika@v0.52.4/packages/troika-three-utils/src/index.js",
+          "troika-worker-utils": "https://cdn.jsdelivr.net/gh/protectwise/troika@v0.52.4/packages/troika-worker-utils/src/index.js",
+          "bidi-js": "https://esm.sh/bidi-js@%5E1.0.2?target=es2022",
+          "webgl-sdf-generator": "https://esm.sh/webgl-sdf-generator@1.1.1/es2022/webgl-sdf-generator.mjs",
+          "lit": "https://cdn.jsdelivr.net/gh/lit/dist@3/core/lit-core.min.js",
+          "lit/": "https://esm.run/lit@3/",
+          "xrblocks": "https://cdn.jsdelivr.net/npm/xrblocks@0.10.0/build/xrblocks.js",
+          "xrblocks/addons/": "https://cdn.jsdelivr.net/npm/xrblocks@0.10.0/build/addons/"
+        }
+      }
+    </script>
+  </head>
+  <body>
+    <div
+      class="background-image"
+      style="background-image: url('https://images.unsplash.com/photo-1519494026892-80bbd2d6fd0d?q=80&w=2053&auto=format&fit=crop'); background-size: cover; background-position: center;"
+    ></div>
+    <script type="module">
+      import 'xrblocks/addons/simulator/SimulatorAddons.js';
+      import * as THREE from 'three';
+      import * as xb from 'xrblocks';
+
+      // Database Alat untuk proses pembersihan
+      const INSTRUMENT_DB = {
+        'tool_scalpel': { name: 'Scalpel Handle', method: 'Ultrasonic Wash', status: 'Dirty' },
+        'tool_forceps': { name: 'Crile Forceps', method: 'Manual Scrubbing', status: 'Dirty' },
+        'tool_scissors': { name: 'Mayo Scissors', method: 'Enzymatic Soak', status: 'Dirty' }
+      };
+
+      class CSSDCleaningAssistant extends xb.Script {
+        constructor() {
+          super();
+          this.mode = 'DASHBOARD'; // DASHBOARD, CLEANING
+          this.cleanedCount = 0;
+          this.tools = [];
+          this.pointer = new THREE.Vector2();
+          this.raycaster = new THREE.Raycaster();
+        }
+
+        init() {
+          this.setupLighting();
+          this.setupWorkspace();
+          this.createUI();
+        }
+
+        setupLighting() {
+          this.add(new THREE.HemisphereLight(0xffffff, 0x444444, 2));
+          const dirLight = new THREE.DirectionalLight(0xffffff, 1.5);
+          dirLight.position.set(2, 5, 2);
+          this.add(dirLight);
+        }
+
+        setupWorkspace() {
+          this.toolsGroup = new THREE.Group();
+          this.add(this.toolsGroup);
+
+          // Meja Utama
+          const tableGeo = new THREE.BoxGeometry(1.2, 0.05, 0.7);
+          const tableMat = new THREE.MeshPhongMaterial({ color: 0x334155 });
+          this.table = new THREE.Mesh(tableGeo, tableMat);
+          this.table.position.set(0, xb.core.user.height - 0.5, -1.0);
+          this.add(this.table);
+
+          // Basin / Bak Pencuci (Hanya muncul saat CLEANING mode)
+          const basinGeo = new THREE.BoxGeometry(0.5, 0.15, 0.4);
+          const basinMat = new THREE.MeshStandardMaterial({ color: 0x94a3b8, metalness: 0.8, roughness: 0.2 });
+          this.basin = new THREE.Mesh(basinGeo, basinMat);
+          this.basin.position.set(0.2, 0.1, 0); 
+          this.basin.visible = false;
+          this.table.add(this.basin);
+
+          // Air di dalam bak
+          const waterGeo = new THREE.PlaneGeometry(0.45, 0.35);
+          const waterMat = new THREE.MeshBasicMaterial({ color: 0x00E5FF, transparent: true, opacity: 0.5 });
+          this.water = new THREE.Mesh(waterGeo, waterMat);
+          this.water.rotation.x = -Math.PI / 2;
+          this.water.position.y = 0.07;
+          this.basin.add(this.water);
+
+          // Create Alat (Status awal kotor: warna gelap)
+          this.createTool('tool_scalpel', new THREE.BoxGeometry(0.04, 0.02, 0.20), -0.3, 0x451a03);
+          this.createTool('tool_forceps', new THREE.CylinderGeometry(0.02, 0.02, 0.20), -0.4, 0x451a03);
+          this.createTool('tool_scissors', new THREE.TorusGeometry(0.03, 0.01, 16, 32), -0.5, 0x451a03);
+        }
+
+        createTool(id, geometry, xOffset, colorHex) {
+          const material = new THREE.MeshStandardMaterial({ color: colorHex, metalness: 0.3, roughness: 0.8 });
+          const mesh = new THREE.Mesh(geometry, material);
+          mesh.position.set(xOffset, xb.core.user.height - 0.45, -0.9);
+          mesh.userData = { id: id, originalPos: mesh.position.clone(), status: 'DIRTY' };
+          this.toolsGroup.add(mesh);
+          this.tools.push(mesh);
+        }
+
+        createUI() {
+          // Dashboard
+          this.dashboardPanel = new xb.SpatialPanel({ width: 1.2, height: 0.8, backgroundColor: '#0A192Fcc' });
+          this.dashboardPanel.position.set(0, xb.core.user.height + 0.1, -1.3);
+          this.add(this.dashboardPanel);
+
+          const dashGrid = this.dashboardPanel.addGrid();
+          dashGrid.addRow({weight: 0.3}).addText({ text: 'CSSD Cleaning Unit', fontColor: '#00E5FF', fontSize: 0.1 });
+          dashGrid.addRow({weight: 0.2}).addText({ text: 'Tahap 1: Dekontaminasi Alat', fontColor: '#FFFFFF', fontSize: 0.06 });
+          
+          const cleanBtn = dashGrid.addRow({weight: 0.4}).addTextButton({ text: 'Mulai Pembersihan', backgroundColor: '#10B981', fontColor: '#FFF' });
+          cleanBtn.onTriggered = () => this.switchMode('CLEANING');
+
+          // Cleaning Info Panel
+          this.cleaningPanel = new xb.SpatialPanel({ width: 0.7, height: 0.6, backgroundColor: '#0A192Fcc' });
+          this.cleaningPanel.position.set(-0.8, xb.core.user.height, -1.0);
+          this.cleaningPanel.rotation.set(0, 0.3, 0);
+          this.cleaningPanel.visible = false;
+          this.add(this.cleaningPanel);
+
+          const cleanGrid = this.cleaningPanel.addGrid();
+          cleanGrid.addRow({weight: 0.2}).addText({ text: 'Instruksi', fontColor: '#00E5FF', fontSize: 0.06 });
+          this.uiProgressText = cleanGrid.addRow({weight: 0.2}).addText({ text: 'Alat Bersih: 0/3', fontColor: '#F59E0B', fontSize: 0.05 });
+          cleanGrid.addRow({weight: 0.4}).addText({ text: 'Klik alat kotor untuk\nmemasukkannya ke bak\ncairan enzimatik.', fontSize: 0.04 });
+          
+          cleanGrid.addRow({weight: 0.2}).addTextButton({ text: 'Reset', backgroundColor: '#334155' }).onTriggered = () => this.switchMode('DASHBOARD');
+        }
+
+        switchMode(newMode) {
+          this.mode = newMode;
+          this.dashboardPanel.visible = (newMode === 'DASHBOARD');
+          this.cleaningPanel.visible = (newMode === 'CLEANING');
+          this.basin.visible = (newMode === 'CLEANING');
+
+          if (newMode === 'DASHBOARD') {
+            this.cleanedCount = 0;
+            this.tools.forEach(tool => {
+              tool.position.copy(tool.userData.originalPos);
+              tool.material.color.setHex(0x451a03);
+              tool.material.metalness = 0.3;
+              tool.userData.status = 'DIRTY';
+            });
+          }
+        }
+
+        onSelectStart(event) {
+          const intersection = xb.core.user.select(this.toolsGroup, event.target);
+          if (intersection) {
+            this.handleCleaning(intersection.object);
+          }
+        }
+
+        onPointerDown(event) {
+          this.pointer.x = (event.clientX / window.innerWidth) * 2 - 1;
+          this.pointer.y = -(event.clientY / window.innerHeight) * 2 + 1;
+          const cameras = xb.core.renderer.xr.getCamera().cameras;
+          if (cameras.length === 0) return;
+          const camera = cameras[0];
+          this.raycaster.setFromCamera(this.pointer, camera);
+          const intersections = this.raycaster.intersectObject(this.toolsGroup, true);
+          if (intersections.length > 0) {
+            this.handleCleaning(intersections[0].object);
+          }
+        }
+
+        handleCleaning(tool) {
+          if (this.mode !== 'CLEANING' || tool.userData.status === 'CLEAN') return;
+
+          // Animasi Masuk Bak
+          const targetPos = new THREE.Vector3();
+          this.basin.getWorldPosition(targetPos);
+          tool.position.set(targetPos.x, targetPos.y + 0.05, targetPos.z);
+
+          // Perubahan Status Visual (Menjadi mengkilap/bersih)
+          setTimeout(() => {
+            tool.material.color.setHex(0xCBD5E1);
+            tool.material.metalness = 1.0;
+            tool.material.roughness = 0.1;
+            tool.userData.status = 'CLEAN';
+            this.cleanedCount++;
+            this.uiProgressText.setText(`Alat Bersih: ${this.cleanedCount}/3`);
+            
+            if (this.cleanedCount === 3) {
+              this.uiProgressText.setText('✅ Semua Bersih!');
+              this.uiProgressText.fontColor = '#10B981';
+            }
+          }, 500);
+        }
+      }
+
+      document.addEventListener('DOMContentLoaded', function () {
+        const options = new xb.Options();
+        options.enableUI();
+        const app = new CSSDCleaningAssistant();
+        xb.add(app);
+        xb.init(options).then(() => {
+          window.addEventListener('pointerdown', app.onPointerDown.bind(app));
+        });
+      });
+    </script>
+  </body>
+</html>
